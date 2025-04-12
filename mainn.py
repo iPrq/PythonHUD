@@ -91,23 +91,26 @@ class MPU6050:
     def update_orientation(self):
         accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.read_accel_gyro()
         
-        # Calculate pitch and roll from accelerometer
-        accel_pitch = math.atan2(accel_y, math.sqrt(accel_x**2 + accel_z**2)) * 180 / math.pi
-        accel_roll = math.atan2(-accel_x, accel_z) * 180 / math.pi
+        # Calculate pitch and roll from accelerometer (inverting signs)
+        accel_pitch = -math.atan2(accel_y, math.sqrt(accel_x**2 + accel_z**2)) * 180 / math.pi
+        accel_roll = -math.atan2(-accel_x, accel_z) * 180 / math.pi
         
         # Time difference
         current_time = time.time()
         dt = current_time - self.last_time
         self.last_time = current_time
         
-        # Integrate gyroscope data
-        self.pitch += gyro_x * dt
-        self.roll += gyro_y * dt
-        self.yaw += gyro_z * dt
+        # Integrate gyroscope data (with inverted signs)
+        self.pitch -= gyro_x * dt
+        self.roll -= gyro_y * dt
+        self.yaw -= gyro_z * dt
         
         # Apply complementary filter
         self.pitch = self.alpha * self.pitch + (1 - self.alpha) * accel_pitch
         self.roll = self.alpha * self.roll + (1 - self.alpha) * accel_roll
+        
+        # Normalize yaw to keep it between 0-360
+        self.yaw = self.yaw % 360
         
         return self.pitch, self.roll, self.yaw
 
