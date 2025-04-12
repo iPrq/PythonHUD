@@ -10,6 +10,8 @@ import random
 import cv2
 import numpy as np
 from kivy.graphics.context_instructions import PushMatrix, PopMatrix, Rotate
+import smbus
+import time
 
 # Try to import picamera2 for Raspberry Pi 5 Module 3 camera
 try:
@@ -19,6 +21,95 @@ try:
 except ImportError:
     PICAMERA_AVAILABLE = False
     print("Picamera2 module not available")
+
+# MPU6050 constants and setup
+MPU6050_ADDR = 0x68
+MPU6050_SMPLRT_DIV = 0x19
+MPU6050_CONFIG = 0x1A
+MPU6050_GYRO_CONFIG = 0x1B
+MPU6050_ACCEL_CONFIG = 0x1C
+MPU6050_INT_ENABLE = 0x38
+MPU6050_PWR_MGMT_1 = 0x6B
+MPU6050_TEMP_OUT_H = 0x41
+MPU6050_ACCEL_XOUT_H = 0x3B
+MPU6050_GYRO_XOUT_H = 0x43
+
+
+class MPU6050:
+    def __init__(self, address=MPU6050_ADDR, bus=1):
+        self.address = address
+        self.bus = smbus.SMBus(bus)
+        
+        # Wake up the MPU6050
+        self.bus.write_byte_data(self.address, MPU6050_PWR_MGMT_1, 0)
+        
+        # Configure the accelerometer (+/-8g)
+        self.bus.write_byte_data(self.address, MPU6050_ACCEL_CONFIG, 0x10)
+        
+        # Configure the gyroscope (500deg/s)
+        self.bus.write_byte_data(self.address, MPU6050_GYRO_CONFIG, 0x08)
+        
+        # Set sample rate to 100 Hz
+        self.bus.write_byte_data(self.address, MPU6050_SMPLRT_DIV, 0x09)
+        
+        # Calibration values
+        self.accel_scale = 4096.0  # For +/-8g
+        self.gyro_scale = 65.5     # For 500deg/s
+        
+        # Initialize variables
+        self.pitch = 0
+        self.roll = 0
+        self.yaw = 0
+        
+        # Time for integration
+        self.last_time = time.time()
+        
+        # Complementary filter coefficient
+        self.alpha = 0.98
+        
+        print("MPU6050 initialized")
+        
+    def read_word(self, reg):
+        high = self.bus.read_byte_data(self.address, reg)
+        low = self.bus.read_byte_data(self.address, reg + 1)
+        value = (high << 8) + low
+        if value >= 0x8000:
+            value = -((65535 - value) + 1)
+        return value
+
+    def read_accel_gyro(self):
+        accel_x = self.read_word(MPU6050_ACCEL_XOUT_H) / self.accel_scale
+        accel_y = self.read_word(MPU6050_ACCEL_XOUT_H + 2) / self.accel_scale
+        accel_z = self.read_word(MPU6050_ACCEL_XOUT_H + 4) / self.accel_scale
+        
+        gyro_x = self.read_word(MPU6050_GYRO_XOUT_H) / self.gyro_scale
+        gyro_y = self.read_word(MPU6050_GYRO_XOUT_H + 2) / self.gyro_scale
+        gyro_z = self.read_word(MPU6050_GYRO_XOUT_H + 4) / self.gyro_scale
+        
+        return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+
+    def update_orientation(self):
+        accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.read_accel_gyro()
+        
+        # Calculate pitch and roll from accelerometer
+        accel_pitch = math.atan2(accel_y, math.sqrt(accel_x**2 + accel_z**2)) * 180 / math.pi
+        accel_roll = math.atan2(-accel_x, accel_z) * 180 / math.pi
+        
+        # Time difference
+        current_time = time.time()
+        dt = current_time - self.last_time
+        self.last_time = current_time
+        
+        # Integrate gyroscope data
+        self.pitch += gyro_x * dt
+        self.roll += gyro_y * dt
+        self.yaw += gyro_z * dt
+        
+        # Apply complementary filter
+        self.pitch = self.alpha * self.pitch + (1 - self.alpha) * accel_pitch
+        self.roll = self.alpha * self.roll + (1 - self.alpha) * accel_roll
+        
+        return self.pitch, self.roll, self.yaw
 
 
 class StarkHUDWidget(Widget):
@@ -45,6 +136,9 @@ class StarkHUDWidget(Widget):
         self.capture = None
         self.picam = None
         self.using_picamera = False
+        
+        # Initialize MPU6050 sensor
+        self.mpu6050 = MPU6050()
         
         # On Raspberry Pi, try Pi camera first, otherwise try webcam
         if PICAMERA_AVAILABLE:
@@ -152,6 +246,9 @@ class StarkHUDWidget(Widget):
         # Update animation values
         self.scan_angle = (self.scan_angle + 5) % 360
         self.heading = (self.heading + 0.5) % 360
+        
+        # Update MPU6050 orientation
+        self.pitch, self.roll, self.yaw = self.mpu6050.update_orientation()
         
         # Get camera frame
         frame = self.get_camera_frame()
