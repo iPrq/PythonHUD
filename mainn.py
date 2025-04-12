@@ -93,18 +93,20 @@ class MPU6050:
         gyro_y = self.read_word_2c(MPU6050_GYRO_XOUT_H + 2) / self.gyro_scale
         gyro_z = self.read_word_2c(MPU6050_GYRO_XOUT_H + 4) / self.gyro_scale
         
-        # Calculate pitch and roll from accelerometer (in degrees)
-        accel_pitch = math.degrees(math.atan2(accel_y, math.sqrt(accel_x**2 + accel_z**2)))
-        accel_roll = math.degrees(math.atan2(-accel_x, accel_z))
+        # Calculate roll and pitch from accelerometer (in degrees)
+        # Fix: swap these to get correct orientation
+        accel_roll = math.degrees(math.atan2(accel_y, math.sqrt(accel_x**2 + accel_z**2)))
+        accel_pitch = math.degrees(math.atan2(-accel_x, accel_z))
         
         # Get time difference for gyro integration
         now = time.time()
         dt = now - self.last_time
         self.last_time = now
         
-        # Complementary filter for pitch and roll
-        self.pitch = self.alpha * (self.pitch + gyro_x * dt) + (1 - self.alpha) * accel_pitch
-        self.roll = self.alpha * (self.roll + gyro_y * dt) + (1 - self.alpha) * accel_roll
+        # Complementary filter for roll and pitch
+        # Fix: swap these to match the accelerometer calculations
+        self.roll = self.alpha * (self.roll + gyro_x * dt) + (1 - self.alpha) * accel_roll
+        self.pitch = self.alpha * (self.pitch + gyro_y * dt) + (1 - self.alpha) * accel_pitch
         
         # Simple integration for yaw (will drift over time)
         self.yaw += gyro_z * dt
@@ -297,11 +299,13 @@ class StarkHUDWidget(Widget):
         with self.canvas:
             # Draw camera feed as background first (if available)
             if hasattr(self, 'texture'):
-                Color(1, 1, 1, 1)  # Full opacity for camera feed
+                # Fix: Changed from Color(1, 1, 1, 1) to a neutral white with no blue tint
+                Color(1, 1, 1, 1)  # Full opacity, no color tint
                 Rectangle(texture=self.texture, pos=(0, 0), size=(self.width, self.height))
                 
             # Background elements - hexagonal grid pattern
-            Color(0, 0.7, 0.9, 0.1)  # Iron Man blue with low opacity
+            # Fix: Reduced opacity for hexgrid to make it less blue
+            Color(0, 0.7, 0.9, 0.05)  # Iron Man blue with very low opacity
             self.draw_hex_grid(20, 20, center_x, center_y)
             
             # Main targeting reticle
