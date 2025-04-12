@@ -73,55 +73,43 @@ class MPU6050:
         high = self.bus.read_byte_data(self.address, reg)
         low = self.bus.read_byte_data(self.address, reg + 1)
         value = (high << 8) + low
-        if value >= 0x8000:
-            value = -((65535 - value) + 1)
         return value
-
-    def read_accel_gyro(self):
-        accel_x = self.read_word(MPU6050_ACCEL_XOUT_H) / self.accel_scale
-        accel_y = self.read_word(MPU6050_ACCEL_XOUT_H + 2) / self.accel_scale
-        accel_z = self.read_word(MPU6050_ACCEL_XOUT_H + 4) / self.accel_scale
         
-        gyro_x = self.read_word(MPU6050_GYRO_XOUT_H) / self.gyro_scale
-        gyro_y = self.read_word(MPU6050_GYRO_XOUT_H + 2) / self.gyro_scale
-        gyro_z = self.read_word(MPU6050_GYRO_XOUT_H + 4) / self.gyro_scale
+    def read_word_2c(self, reg):
+        val = self.read_word(reg)
+        if (val >= 0x8000):
+            return -((65535 - val) + 1)
+        else:
+            return val
+            
+    def read_data(self):
+        # Read accelerometer data
+        accel_x = self.read_word_2c(MPU6050_ACCEL_XOUT_H) / self.accel_scale
+        accel_y = self.read_word_2c(MPU6050_ACCEL_XOUT_H + 2) / self.accel_scale
+        accel_z = self.read_word_2c(MPU6050_ACCEL_XOUT_H + 4) / self.accel_scale
         
-        return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-
-    def update_orientation(self):
-        accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.read_accel_gyro()
+        # Read gyroscope data
+        gyro_x = self.read_word_2c(MPU6050_GYRO_XOUT_H) / self.gyro_scale
+        gyro_y = self.read_word_2c(MPU6050_GYRO_XOUT_H + 2) / self.gyro_scale
+        gyro_z = self.read_word_2c(MPU6050_GYRO_XOUT_H + 4) / self.gyro_scale
         
-        # Swap and invert axes to match the expected orientation
-        # This remaps the sensor axes to match your application's coordinate system
-        temp_gyro_x = gyro_x
-        temp_gyro_y = gyro_y
-        temp_gyro_z = gyro_z
+        # Calculate pitch and roll from accelerometer (in degrees)
+        accel_pitch = math.degrees(math.atan2(accel_y, math.sqrt(accel_x**2 + accel_z**2)))
+        accel_roll = math.degrees(math.atan2(-accel_x, accel_z))
         
-        # Remap the axes - adjust these based on your sensor orientation
-        gyro_x = temp_gyro_z  # Use Z axis for pitch
-        gyro_y = temp_gyro_x  # Use X axis for roll
-        gyro_z = temp_gyro_y  # Use Y axis for yaw
+        # Get time difference for gyro integration
+        now = time.time()
+        dt = now - self.last_time
+        self.last_time = now
         
-        # Calculate pitch and roll from accelerometer
-        # Using the same axis remapping logic
-        accel_pitch = -math.atan2(accel_z, math.sqrt(accel_x**2 + accel_y**2)) * 180 / math.pi
-        accel_roll = -math.atan2(-accel_x, accel_y) * 180 / math.pi
+        # Complementary filter for pitch and roll
+        self.pitch = self.alpha * (self.pitch + gyro_x * dt) + (1 - self.alpha) * accel_pitch
+        self.roll = self.alpha * (self.roll + gyro_y * dt) + (1 - self.alpha) * accel_roll
         
-        # Time difference
-        current_time = time.time()
-        dt = current_time - self.last_time
-        self.last_time = current_time
+        # Simple integration for yaw (will drift over time)
+        self.yaw += gyro_z * dt
         
-        # Integrate gyroscope data with the remapped axes
-        self.pitch -= gyro_x * dt
-        self.roll -= gyro_y * dt
-        self.yaw += gyro_z * dt  # Changed to += to reverse direction
-        
-        # Apply complementary filter
-        self.pitch = self.alpha * self.pitch + (1 - self.alpha) * accel_pitch
-        self.roll = self.alpha * self.roll + (1 - self.alpha) * accel_roll
-        
-        # Normalize yaw to keep it between 0-360
+        # Normalize yaw to 0-360
         self.yaw = self.yaw % 360
         
         return self.pitch, self.roll, self.yaw
@@ -152,8 +140,10 @@ class StarkHUDWidget(Widget):
         self.picam = None
         self.using_picamera = False
         
-        # Initialize MPU6050 sensor
+        # Initialize MPU6050
+        print("Initializing MPU6050 sensor...")
         self.mpu6050 = MPU6050()
+        self.system_status = "MPU6050 INITIALIZED"
         
         # On Raspberry Pi, try Pi camera first, otherwise try webcam
         if PICAMERA_AVAILABLE:
@@ -171,31 +161,26 @@ class StarkHUDWidget(Widget):
     
     def try_webcam(self):
         """Try to initialize standard webcam"""
-        try:
-            self.capture = cv2.VideoCapture(0)
-            
-            # Check if webcam opened successfully
-            if not self.capture.isOpened():
-                self.system_status = "WEBCAM ERROR: CANNOT ACCESS CAMERA"
-                print("Error: Could not open webcam")
-                return False
-            
-            # Get webcam resolution
-            ret, frame = self.capture.read()
-            if ret:
-                self.frame_height, self.frame_width = frame.shape[:2]
-                self.system_status = "STANDARD WEBCAM CONNECTED"
-                print(f"Camera resolution: {self.frame_width}x{self.frame_height}")
-                return True
-            else:
-                self.system_status = "WEBCAM ERROR: CANNOT GET FRAME"
-                print("Error: Could not get frame from webcam")
-                self.capture.release()
-                self.capture = None
-                return False
-        except Exception as e:
-            self.system_status = f"WEBCAM ERROR: {str(e)}"
-            print(f"Error initializing webcam: {e}")
+        self.capture = cv2.VideoCapture(0)
+        
+        # Check if webcam opened successfully
+        if not self.capture.isOpened():
+            self.system_status = "WEBCAM ERROR: CANNOT ACCESS CAMERA"
+            print("Error: Could not open webcam")
+            return False
+        
+        # Get webcam resolution
+        ret, frame = self.capture.read()
+        if ret:
+            self.frame_height, self.frame_width = frame.shape[:2]
+            self.system_status = "STANDARD WEBCAM CONNECTED"
+            print(f"Camera resolution: {self.frame_width}x{self.frame_height}")
+            return True
+        else:
+            self.system_status = "WEBCAM ERROR: CANNOT GET FRAME"
+            print("Error: Could not get frame from webcam")
+            self.capture.release()
+            self.capture = None
             return False
         
     def try_picamera(self):
@@ -204,41 +189,33 @@ class StarkHUDWidget(Widget):
             self.system_status = "PI CAMERA NOT AVAILABLE"
             return False
             
-        try:
-            # Initialize the camera with a simpler approach
-            self.picam = Picamera2()
-            
-            # Configure camera with preview config
-            config = self.picam.create_preview_configuration(
-                main={"size": (self.frame_width, self.frame_height), "format": "RGB888"}
-            )
-            self.picam.configure(config)
-            
-            # Start the camera
-            self.picam.start()
-            
-            # Wait a moment for camera to initialize
-            import time
-            time.sleep(1.0)
-            
-            # Test if we can get a frame
-            test_frame = self.picam.capture_array()
-            
-            if test_frame is not None and len(test_frame.shape) == 3:
-                self.frame_height, self.frame_width = test_frame.shape[:2]
-                self.using_picamera = True
-                self.system_status = f"PI CAMERA ACTIVE: {self.frame_width}x{self.frame_height}"
-                print(f"Successfully initialized Pi Camera: {self.frame_width}x{self.frame_height}")
-                return True
-            else:
-                self.system_status = "PI CAMERA ERROR: INVALID FRAME"
-                print(f"Invalid frame from Pi Camera: {test_frame}")
-                return False
-        except Exception as e:
-            self.system_status = f"PI CAMERA ERROR: {str(e)}"
-            print(f"Error initializing Pi Camera: {e}")
-            import traceback
-            traceback.print_exc()
+        # Initialize the camera with a simpler approach
+        self.picam = Picamera2()
+        
+        # Configure camera with preview config
+        config = self.picam.create_preview_configuration(
+            main={"size": (self.frame_width, self.frame_height), "format": "RGB888"}
+        )
+        self.picam.configure(config)
+        
+        # Start the camera
+        self.picam.start()
+        
+        # Wait a moment for camera to initialize
+        time.sleep(1.0)
+        
+        # Test if we can get a frame
+        test_frame = self.picam.capture_array()
+        
+        if test_frame is not None and len(test_frame.shape) == 3:
+            self.frame_height, self.frame_width = test_frame.shape[:2]
+            self.using_picamera = True
+            self.system_status = f"PI CAMERA ACTIVE: {self.frame_width}x{self.frame_height}"
+            print(f"Successfully initialized Pi Camera: {self.frame_width}x{self.frame_height}")
+            return True
+        else:
+            self.system_status = "PI CAMERA ERROR: INVALID FRAME"
+            print(f"Invalid frame from Pi Camera: {test_frame}")
             return False
     
     def __del__(self):
@@ -251,19 +228,18 @@ class StarkHUDWidget(Widget):
             print("OpenCV Camera released")
             
         if hasattr(self, 'picam') and self.picam and self.using_picamera:
-            try:
-                self.picam.close()
-                print("Pi Camera released")
-            except:
-                pass
+            self.picam.close()
+            print("Pi Camera released")
         
     def update(self, dt):
         # Update animation values
         self.scan_angle = (self.scan_angle + 5) % 360
-        self.heading = (self.heading + 0.5) % 360
         
-        # Update MPU6050 orientation
-        self.pitch, self.roll, self.yaw = self.mpu6050.update_orientation()
+        # Get MPU6050 data
+        self.pitch, self.roll, self.yaw = self.mpu6050.read_data()
+        
+        # Use yaw as heading
+        self.heading = self.yaw
         
         # Get camera frame
         frame = self.get_camera_frame()
@@ -285,17 +261,14 @@ class StarkHUDWidget(Widget):
         # Redraw the HUD
         self.canvas.clear()
         self.draw_elements()
-
+        
     def get_camera_frame(self):
         """Get a frame from the active camera (Pi Camera or webcam)"""
         if self.using_picamera and self.picam:
             try:
                 # Get frame from Pi Camera (already in RGB format from config)
                 frame = self.picam.capture_array()
-                
-                # No debug text - removed
                 return frame
-                    
             except Exception as e:
                 print(f"Error capturing Pi Camera frame: {e}")
                 return None
@@ -308,8 +281,6 @@ class StarkHUDWidget(Widget):
                 if ret:
                     # Convert BGR to RGB for Kivy
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # No debug text - removed
                     return frame
                 else:
                     return None
