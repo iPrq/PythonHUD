@@ -91,19 +91,31 @@ class MPU6050:
     def update_orientation(self):
         accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.read_accel_gyro()
         
-        # Calculate pitch and roll from accelerometer (inverting signs)
-        accel_pitch = -math.atan2(accel_y, math.sqrt(accel_x**2 + accel_z**2)) * 180 / math.pi
-        accel_roll = -math.atan2(-accel_x, accel_z) * 180 / math.pi
+        # Swap and invert axes to match the expected orientation
+        # This remaps the sensor axes to match your application's coordinate system
+        temp_gyro_x = gyro_x
+        temp_gyro_y = gyro_y
+        temp_gyro_z = gyro_z
+        
+        # Remap the axes - adjust these based on your sensor orientation
+        gyro_x = temp_gyro_z  # Use Z axis for pitch
+        gyro_y = temp_gyro_x  # Use X axis for roll
+        gyro_z = temp_gyro_y  # Use Y axis for yaw
+        
+        # Calculate pitch and roll from accelerometer
+        # Using the same axis remapping logic
+        accel_pitch = -math.atan2(accel_z, math.sqrt(accel_x**2 + accel_y**2)) * 180 / math.pi
+        accel_roll = -math.atan2(-accel_x, accel_y) * 180 / math.pi
         
         # Time difference
         current_time = time.time()
         dt = current_time - self.last_time
         self.last_time = current_time
         
-        # Integrate gyroscope data (with inverted signs)
+        # Integrate gyroscope data with the remapped axes
         self.pitch -= gyro_x * dt
         self.roll -= gyro_y * dt
-        self.yaw -= gyro_z * dt
+        self.yaw += gyro_z * dt  # Changed to += to reverse direction
         
         # Apply complementary filter
         self.pitch = self.alpha * self.pitch + (1 - self.alpha) * accel_pitch
